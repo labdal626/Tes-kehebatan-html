@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Galactic Neural Network Visualizer + Synthesizer</title>
+<style>
+  /* Reset */
+  * {
+    margin:0; padding:0; box-sizing:border-box;
+  }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: radial-gradient(ellipse at center, #010a1f 0%, #000000 100%);
+    font-family: 'Courier New', Courier, monospace;
+    color: #0ff;
+    user-select: none;
+  }
+
+  #canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    display: block;
+    background: transparent;
+    z-index: 0;
+  }
+
+  .ui-panel {
+    position: fixed;
+    top: 15px; left: 15px;
+    background: rgba(2, 12, 32, 0.85);
+    border-radius: 12px;
+    padding: 25px;
+    width: 300px;
+    box-shadow: 0 0 30px #0ff5;
+    z-index: 10;
+  }
+
+  .ui-panel h2 {
+    font-weight: 700;
+    font-size: 1.5rem;
+    margin-bottom: 15px;
+    text-shadow: 0 0 12px #0ff;
+  }
+
+  .ui-panel label {
+    display: block;
+    margin: 12px 0 4px;
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  .ui-panel input[type=range] {
+    width: 100%;
+  }
+
+  .ui-panel button {
+    margin: 20px 0 0;
+    width: 100%;
+    padding: 12px 0;
+    font-weight: 700;
+    font-size: 1rem;
+    color: #0ff;
+    border: 2px solid #0ff;
+    background: transparent;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: 0.3s ease;
+  }
+  .ui-panel button:hover {
+    background: #0ff;
+    color: #00111b;
+  }
+
+  .footer-text {
+    position: fixed;
+    bottom: 15px; right: 15px;
+    font-size: 0.75rem;
+    color: #099;
+    opacity: 0.6;
+    font-style: italic;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    user-select:none;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="canvas" tabindex="0"></canvas>
+
+<div class="ui-panel">
+  <h2>Neural Net Synth Control</h2>
+  <label for="nodeCount">Jumlah Node: <span id="nodeCountLabel">30</span></label>
+  <input type="range" id="nodeCount" min="10" max="80" value="30" />
+
+  <label for="connectionDensity">Kepadatan Koneksi: <span id="connectionDensityLabel">0.15</span></label>
+  <input type="range" id="connectionDensity" min="0.05" max="0.5" step="0.01" value="0.15" />
+
+  <label for="soundVolume">Volume Suara: <span id="soundVolumeLabel">0.3</span></label>
+  <input type="range" id="soundVolume" min="0" max="1" step="0.01" value="0.3" />
+
+  <button id="resetBtn">Reset Jaringan</button>
+</div>
+
+<div class="footer-text">
+  Made with ❤️ by AI — Tes Kehebatan HTML + JS + WebAudio API
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  let W, H, dpr;
+  
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // --- Neural Network Data Structures ---
+  class Node {
+    constructor(id, x, y, z) {
+      this.id = id;
+      this.x = x; // 3D coords
+      this.y = y;
+      this.z = z;
+      this.radius = 8;
+      this.outConnections = [];
+      this.activation = 0; // 0..1, glowing intensity
+      this.velocity = {x: 0, y: 0, z: 0}; // for subtle floating animation
+    }
+
+    update() {
+      // Subtle floating effect (random velocity with some damping)
+      this.velocity.x += (Math.random() - 0.5) * 0.1;
+      this.velocity.y += (Math.random() - 0.5) * 0.1;
+      this.velocity.z += (Math.random() - 0.5) * 0.1;
+
+      // Damping
+      this.velocity.x *= 0.85;
+      this.velocity.y *= 0.85;
+      this.velocity.z *= 0.85;
+
+      // Update position
+      this.x += this.velocity.x;
+      this.y += this.velocity.y;
+      this.z += this.velocity.z;
+
+      // Clamp within some space cube
+      const bound = 300;
+      this.x = Math.max(-bound, Math.min(bound, this.x));
+      this.y = Math.max(-bound, Math.min(bound, this.y));
+      this.z = Math.max(-bound, Math.min(bound, this.z));
+
+      // Decay activation
+      this.activation *= 0.95;
+    }
+
+    draw(ctx, projection, activatedGlow) {
+      // Project 3D pos to 2D
+      const p = projection(this.x, this.y, this.z);
+
+      // Radius modulated by activation
+      let r = this.radius + this.activation * 10;
+
+      // Draw glow if active
+      if (this.activation > 0.01) {
+        const glowGradient = ctx.createRadialGradient(p.x, p.y, r*0.6, p.x, p.y, r*3);
+        glowGradient.addColorStop(0, `rgba(0,255,255,${this.activation})`);
+        glowGradient.addColorStop(1, 'rgba(0,255,255,0)');
+        ctx.fillStyle = glowGradient;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r*3, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+
+      // Draw node circle
+      ctx.fillStyle = `rgba(0, 255, 255, ${0.4 + this.activation * 0.6})`;
+      ctx.shadowColor = '#0ff';
+      ctx.shadowBlur = this.activation * 15;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  class Connection {
+    constructor(fromNode, toNode) {
+      this.from = fromNode;
+      this.to = toNode;
+      this.signalProgress = 0; // 0..1 along connection
+      this.signalActive = false;
+    }
+
+    update() {
+      if (this.signalActive) {
+        this.signalProgress += 0.02 + Math.random()*0.01;
+        if (this.signalProgress >= 1) {
+          this.signalProgress = 0;
+          this.signalActive = false;
+          // Activate the toNode
+          this.to.activation = Math.min(1, this.to.activation + 0.6);
+          playNoteForNode(this.to);
+        }
+      }
+    }
+
+    draw(ctx, projection) {
+      const p1 = projection(this.from.x, this.from.y, this.from.z);
+      const p2 = projection(this.to.x, this.to.y, this.to.z);
+
+      // Draw connection line
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+
+      // Draw moving signal dot if active
+      if (this.signalActive) {
+        const sx = p1.x + (p2.x - p1.x) * this.signalProgress;
+        const sy = p1.y + (p2.y - p1.y) * this.signalProgress;
+        ctx.fillStyle = 'rgba(0, 255, 255, 0.9)';
+        ctx.shadowColor = '#0ff';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 6, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+    }
+  }
+
+  // --- Projection function for 3D to 2D ---
+  // Simple perspective projection
+  function project(x, y, z) {
+    const fov = 700;
+    const scale = fov / (fov + z + 350);
+    return {
+      x: W/2 + x * scale,
+      y: H/2 + y * scale
+    };
+  }
+
+  // --- Neural Network Generator ---
+  let nodes = [];
+  let connections = [];
+  let nodeCount = parseInt(document.getElementById('nodeCount').value);
+  let connectionDensity = parseFloat(document.getElementById('connectionDensity').value);
+
+  function generateNetwork() {
+    nodes = [];
+    connections = [];
+    // Generate nodes inside a cube centered at 0
+    const spread = 300;
+    for(let i=0; i<nodeCount; i++) {
+      nodes.push(new Node(i,
+        (Math.random() - 0.5) * spread,
+        (Math.random() - 0.5) * spread,
+        (Math.random() - 0.5) * spread));
+    }
+    // Generate connections probabilistically by density parameter
+    nodes.forEach(n => n.outConnections = []); // reset
+    for(let i=0; i<nodes.length; i++) {
+      for(let j=0; j<nodes.length; j++) {
+        if(i !== j && Math.random() < connectionDensity) {
+          let conn = new Connection(nodes[i], nodes[j]);
+          connections.push(conn);
+          nodes[i].outConnections.push(conn);
+        }
+      }
+    }
+  }
+
+  generateNetwork();
+
+  // --- Web Audio API Synth Setup ---
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioContext();
+  let masterGain = audioCtx.createGain();
+  masterGain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+  masterGain.connect(audioCtx.destination);
+
+  function playNoteForNode(node) {
+    if (audioCtx.state === 'suspended') {
+      // Try resume audio context if user hasn't interacted (some browsers block autoplay)
+      audioCtx.resume();
+    }
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    // Frequency depends on node's 3D position for fun variation
+    const baseFreq = 220;
+    const freq = baseFreq + ((node.z + 300) / 600) * 880; 
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    osc.type = 'sine';
+
+    gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+
+    osc.connect(gainNode);
+    gainNode.connect(masterGain);
+
+    osc.start(audioCtx.currentTime);
+    osc.stop(audioCtx.currentTime + 0.3);
+  }
+
+  // --- Interaction ---
+  let draggingNode = null;
+  let dragOffset = {x:0,y:0,z:0};
+
+  canvas.addEventListener('mousedown', e => {
+    const mousePos = { x: e.clientX, y: e.clientY };
+    // Find closest node if near cursor (within 20px projected distance)
+    let closest = null;
+    let minDist = 20;
+    nodes.forEach(n => {
+      const p = project(n.x, n.y, n.z);
+      const dist = Math.hypot(p.x - mousePos.x, p.y - mousePos.y);
+      if(dist < minDist) {
+        closest = n;
+        minDist = dist;
+      }
+    });
+    if(closest) {
+      draggingNode = closest;
+      dragOffset.x = draggingNode.x - (mousePos.x - W/2);
+      dragOffset.y = draggingNode.y - (mousePos.y - H/2);
+      dragOffset.z = draggingNode.z;
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    draggingNode = null;
+  });
+
+  window.addEventListener('mousemove', e => {
+    if(draggingNode) {
+      draggingNode.x = (e.clientX - W/2) + dragOffset.x;
+      draggingNode.y = (e.clientY - H/2) + dragOffset.y;
+
+      // Fix Z to dragOffset.z so node moves on 2D plane
+      draggingNode.z = dragOffset.z;
+
+      // Trigger activation and send signal along out connections
+      draggingNode.activation = 1;
+
+      draggingNode.outConnections.forEach(conn => {
+        conn.signalActive = true;
+        conn.signalProgress = 0;
+      });
+    }
+  });
+
+  // --- Animation loop ---
+  function animate() {
+    ctx.clearRect(0, 0, W, H);
+
+    // Dim background overlay to create motion trails effect
+    ctx.fillStyle = 'rgba(0, 10, 20, 0.25)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Update and draw connections
+    connections.forEach(conn => {
+      conn.update();
+      conn.draw(ctx, project);
+    });
+
+    // Update and draw nodes
+    nodes.forEach(node => {
+      node.update();
+      node.draw(ctx, project);
+    });
+
+    requestAnimationFrame(animate);
+  }
+  animate();
+
+  // --- UI Handlers ---
+  const nodeCountInput = document.getElementById('nodeCount');
+  const connDensityInput = document.getElementById('connectionDensity');
+  const soundVolumeInput = document.getElementById('soundVolume');
+  const nodeCountLabel = document.getElementById('nodeCountLabel');
+  const connDensityLabel = document.getElementById('connectionDensityLabel');
+  const soundVolumeLabel = document.getElementById('soundVolumeLabel');
+  const resetBtn = document.getElementById('resetBtn');
+
+  nodeCountInput.addEventListener('input', e => {
+    nodeCountLabel.textContent = e.target.value;
+  });
+
+  connDensityInput.addEventListener('input', e => {
+    connDensityLabel.textContent = parseFloat(e.target.value).toFixed(2);
+  });
+
+  soundVolumeInput.addEventListener('input', e => {
+    soundVolumeLabel.textContent = parseFloat(e.target.value).toFixed(2);
+    masterGain.gain.setValueAtTime(parseFloat(e.target.value), audioCtx.currentTime);
+  });
+
+  resetBtn.addEventListener('click', () => {
+    nodeCount = parseInt(nodeCountInput.value);
+    connectionDensity = parseFloat(connDensityInput.value);
+    generateNetwork();
+  });
+})();
+</script>
+
+</body>
+</html>
